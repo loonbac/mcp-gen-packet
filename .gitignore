@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript
+*.tsbuildinfo
+
+# Coverage
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.bak
+
+# PT extension exports
+pt-extension/js/

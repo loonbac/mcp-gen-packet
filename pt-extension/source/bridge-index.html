@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP-PTB Bridge</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Courier New', Consolas, monospace;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #00ff88;
+            padding: 16px;
+            min-height: 100vh;
+            font-size: 13px;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #00ff8844;
+        }
+        .header-icon {
+            font-size: 18px;
+        }
+        .header-title {
+            font-size: 15px;
+            font-weight: bold;
+            color: #00ff88;
+            text-shadow: 0 0 10px #00ff8866;
+        }
+        .status {
+            font-size: 12px;
+            margin: 8px 0;
+            padding: 6px 10px;
+            background: #0d0d1a;
+            border-radius: 4px;
+            border-left: 3px solid #00ff88;
+        }
+        .status.ok {
+            border-left-color: #00ff88;
+            color: #00ff88;
+        }
+        .status.err {
+            border-left-color: #ff4444;
+            color: #ff4444;
+        }
+        .status.warn {
+            border-left-color: #ffaa00;
+            color: #ffaa00;
+        }
+        .log-container {
+            background: #0d0d1a;
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 180px;
+            overflow-y: auto;
+            border: 1px solid #00ff8822;
+        }
+        .log-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        .log-container::-webkit-scrollbar-track {
+            background: #0d0d1a;
+        }
+        .log-container::-webkit-scrollbar-thumb {
+            background: #00ff8844;
+            border-radius: 3px;
+        }
+        .log-entry {
+            margin: 3px 0;
+            font-size: 11px;
+            padding: 2px 0;
+            border-bottom: 1px solid #ffffff08;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-time {
+            color: #666;
+        }
+        .log-ok { color: #00ff88; }
+        .log-err { color: #ff4444; }
+        .log-warn { color: #ffaa00; }
+        .log-info { color: #66aaff; }
+        .commands {
+            margin-top: 10px;
+        }
+        .commands-title {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 4px;
+        }
+        .command-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .command-tag {
+            background: #00ff8822;
+            color: #00ff88;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <span class="header-icon">🔗</span>
+        <span class="header-title">MCP-PTB Bridge</span>
+    </div>
+    
+    <div class="status" id="connStatus">Conectando a ws://localhost:9090...</div>
+    
+    <div class="log-container" id="log"></div>
+    
+    <div class="commands">
+        <div class="commands-title">Métodos Soportados:</div>
+        <div class="command-list">
+            <span class="command-tag">add_device</span>
+            <span class="command-tag">add_link</span>
+            <span class="command-tag">add_module</span>
+            <span class="command-tag">configure_pc_ip</span>
+            <span class="command-tag">configure_ios_device</span>
+            <span class="command-tag">get_devices</span>
+        </div>
+    </div>
+    
+    <script src="bridge-client.js"></script>
+</body>
+</html>
