@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>MCP-PTB Bridge</title>
+    <style>
+        body { font-family: 'Consolas', 'Courier New', monospace; background: #1a1a2e; color: #00ff88; padding: 12px; margin: 0; font-size: 12px; }
+        .header { font-size: 14px; font-weight: bold; color: #00ccff; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 6px; }
+        .status { font-size: 13px; margin: 6px 0; padding: 4px 8px; border-radius: 3px; }
+        .ok { color: #00ff88; background: rgba(0,255,136,0.1); }
+        .err { color: #ff4444; background: rgba(255,68,68,0.1); }
+        .warn { color: #ffaa00; background: rgba(255,170,0,0.1); }
+        .info { color: #88aaff; }
+        #log { background: #0d0d1a; padding: 6px; border-radius: 4px; max-height: 160px; overflow-y: auto; border: 1px solid #333; }
+        .log-entry { margin: 1px 0; font-size: 11px; }
+        .log-time { color: #666; }
+        .log-ok { color: #00ff88; }
+        .log-err { color: #ff4444; }
+        .log-info { color: #88aaff; }
+        .log-warn { color: #ffaa00; }
+    </style>
+</head>
+<body>
+    <div class="header">MCP-PTB Bridge</div>
+    <div class="status warn" id="connStatus">Iniciando conexion...</div>
+    <div id="log"></div>
+    <script>
+    // MCP-PTB Bridge pump (validated transport).
+    // Command flow: GET /next -> $se('runCode', code) -> engine sets __mcpLastResult
+    // Result flow: $se('evalExpr','__mcpLastResult') -> flatten Promise (<=5) -> POST /result {requestId, method, ok, data?, error?, ts}
+    (function(){
+        var POLL_URL = "http://127.0.0.1:54321/next";
+        var STATUS_URL = "http://127.0.0.1:54321/status";
+        var RESULT_URL = "http://127.0.0.1:54321/result";
+        var POLL_INTERVAL = 400;
+        var MAX_ERRORS = 8;
+
+        var statusEl = document.getElementById("connStatus");
+        var logEl = document.getElementById("log");
+        var errorCount = 0;
+        var pollTimer = null;
+        var connected = false;
+        var pollCount = 0;
+
+        function log(msg, type) {
+            var div = document.createElement("div");
+            div.className = "log-entry";
+            var t = new Date().toLocaleTimeString();
+            var cls = type || "info";
+            div.innerHTML = '<span class="log-time">[' + t + ']</span> <span class="log-' + cls + '">' + escapeHtml(msg) + '</span>';
+            logEl.appendChild(div);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function escapeHtml(s) {
+            var d = document.createElement("div");
+            d.textContent = String(s);
+            return d.innerHTML;
+        }
+
+        function setStatus(text, cls) {
+            statusEl.textContent = text;
+            statusEl.className = "status " + (cls || "");
+        }
+
+        function reportResult(result) {
+            try {
+                var xr = new XMLHttpRequest();
+                xr.open("POST", RESULT_URL, true);
+                xr.setRequestHeader("Content-Type", "text/plain");
+                xr.send(String(result));
+            } catch(e) {}
+        }
+
+        function isRealValue(v) {
+            return v !== null && typeof v !== "undefined" && v !== "";
+        }
+
+        function poll() {
+            var x = new XMLHttpRequest();
+            x.open("GET", POLL_URL, true);
+            x.timeout = 2000;
+
+            x.onload = function() {
+                if (x.status === 200) {
+                    errorCount = 0;
+                    if (!connected) {
+                        connected = true;
+                        log("Conectado al servidor MCP", "ok");
+                        setStatus("Conectado", "ok");
+                    }
+
+                    if (x.responseText && x.responseText.length > 0) {
+                        pollCount++;
+                        log("Ejecutando comando #" + pollCount, "info");
+                        try {
+                            var rc = $se("runCode", x.responseText);
+                            if (rc === false) {
+                                reportResult("ERROR: runCode returned false");
+                                log("Comando #" + pollCount + " fallo", "err");
+                            } else {
+                                var handled = false;
+                                try {
+                                    var p = $se("evalExpr", "__mcpLastResult");
+                                    if (p && typeof p.then === "function") {
+                                        handled = true;
+                                        var flatten = function(v, depth) {
+                                            if (v && typeof v.then === "function" && depth < 5) {
+                                                v.then(function(next) { flatten(next, depth + 1); }, function() { reportResult("OK"); });
+                                            } else if (isRealValue(v) && typeof v.then !== "function" && String(v) !== "[object Promise]") {
+                                                reportResult(String(v));
+                                                log("Comando #" + pollCount + " ejecutado (con resultado)", "ok");
+                                            } else if (depth >= 5) {
+                                                reportResult("DBG deep-promise type=" + (typeof v) + " thenable=" + (v && typeof v.then === "function"));
+                                            } else {
+                                                reportResult("DBG type=" + (typeof p) + " thenable=" + (p && typeof p.then === "function") + " str=" + String(p).slice(0, 40));
+                                            }
+                                        };
+                                        flatten(p, 0);
+                                    } else if (isRealValue(p) && String(p) !== "[object Promise]") {
+                                        handled = true;
+                                        reportResult(String(p));
+                                        log("Comando #" + pollCount + " ejecutado (con resultado)", "ok");
+                                    } else if (isRealValue(p)) {
+                                        handled = true;
+                                        reportResult("DBG sync type=" + (typeof p) + " str=" + String(p).slice(0, 40));
+                                    }
+                                } catch(pe) {
+                                    reportResult("DBG evalExpr-throw: " + String(pe).slice(0, 60));
+                                }
+                                if (!handled) {
+                                    reportResult("OK");
+                                    log("Comando #" + pollCount + " ejecutado", "ok");
+                                }
+                            }
+                        } catch(e) {
+                            reportResult("ERROR: " + String(e));
+                            log("Error: " + e, "err");
+                        }
+                    }
+                    return;
+                }
+                handleError();
+            };
+
+            x.onerror = function() { handleError(); };
+            x.ontimeout = function() { handleError(); };
+
+            x.send();
+        }
+
+        function handleError() {
+            errorCount++;
+            if (errorCount >= MAX_ERRORS) {
+                if (connected) {
+                    connected = false;
+                    log("Desconectado del servidor MCP", "err");
+                    setStatus("Desconectado - reintentando...", "err");
+                }
+                errorCount = 3;
+            }
+            if (!connected && errorCount <= 1) {
+                setStatus("Esperando servidor MCP en puerto 54321...", "warn");
+            }
+        }
+
+        // Start polling
+        log("Iniciando MCP-PTB Bridge...", "info");
+        setStatus("Buscando servidor MCP en 127.0.0.1:54321...", "warn");
+        pollTimer = setInterval(poll, POLL_INTERVAL);
+        poll();
+    })();
+    </script>
+</body>
+</html>

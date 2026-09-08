@@ -109,14 +109,8 @@ var deviceTypes = {
     embeddedserver: 38
 }
 
-function getDevices(filter = undefined, startsWith = "") {
+getDevices = function(filter, startsWith, requestId, method, ts) {
     // filter can be a string, number or array of strings/numbers (or nothing)
-    // For example:
-    // "router"
-    // 0
-    // [switch, router, multilayerswitch]
-    // [0, 1, 16]
-
     if (filter) {
         if (typeof filter == "string") {
             filter = [filter];
@@ -136,10 +130,101 @@ function getDevices(filter = undefined, startsWith = "") {
         var device = ipc.network().getDeviceAt(i);
         var deviceName = device.getName();
         var deviceType = device.getType();
-        
-        if ((!filter || filter.includes(deviceType)) && deviceName.startsWith(startsWith)) {
-            devices.push(deviceName);
+
+        if ((!filter || filter.includes(deviceType)) && deviceName.startsWith(startsWith || "")) {
+            devices.push({ name: deviceName, type: deviceType });
         }
     }
-    return devices;
+    var result = { requestId: requestId, method: method, ok: true, data: { devices: devices }, ts: ts };
+    __mcpLastResult = JSON.stringify(result); return JSON.stringify(result);
+}
+
+getPcConfig = function(device, requestId, method, ts) {
+    var dev = ipc.network().getDevice(device);
+    var port = dev.getPort("FastEthernet0");
+    var result = { requestId: requestId, method: method, ok: true, data: {
+        ip: port.getIpAddress(),
+        mask: port.getSubnetMask(),
+        dhcp: dev.getDhcpFlag(),
+        mac: port.getMacAddress(),
+        gateway: null,
+        dns: null,
+        note: "gateway/dns unavailable (PT API limitation)"
+    }, ts: ts };
+    __mcpLastResult = JSON.stringify(result); return JSON.stringify(result);
+}
+
+getDeviceState = function(device, requestId, method, ts) {
+    var dev = ipc.network().getDevice(device);
+    var portCount = dev.getPortCount();
+    var ports = [];
+    for (var i = 0; i < portCount; i++) {
+        var p = dev.getPortAt(i);
+        ports.push({
+            name: p.getName(),
+            ip: p.getIpAddress(),
+            mask: p.getSubnetMask(),
+            up: p.isPortUp(),
+            protoUp: p.isProtocolUp(),
+            description: p.getDescription(),
+            remotePort: p.getRemotePortName()
+        });
+    }
+    var result = { requestId: requestId, method: method, ok: true, data: {
+        name: dev.getName(),
+        type: dev.getType(),
+        model: dev.getModel(),
+        power: dev.getPower(),
+        uptime: dev.getUpTime(),
+        ports: ports
+    }, ts: ts };
+    __mcpLastResult = JSON.stringify(result); return JSON.stringify(result);
+}
+
+getTopology = function(requestId, method, ts) {
+    var deviceCount = ipc.network().getDeviceCount();
+    var devices = [];
+    var links = [];
+    var seen = {};
+    for (var i = 0; i < deviceCount; i++) {
+        var dev = ipc.network().getDeviceAt(i);
+        devices.push({ name: dev.getName(), type: dev.getType() });
+        var portCount = dev.getPortCount();
+        for (var j = 0; j < portCount; j++) {
+            try {
+                var port = dev.getPortAt(j);
+                var L = port.getLink();
+                if (L) {
+                    var P1 = L.getPort1(), P2 = L.getPort2();
+                    var from = P1.getOwnerDevice().getName() + ":" + P1.getName();
+                    var to = P2.getOwnerDevice().getName() + ":" + P2.getName();
+                    var key = from < to ? from + "||" + to : to + "||" + from;
+                    if (!seen[key]) {
+                        seen[key] = true;
+                        links.push({ from: from, to: to, type: L.getConnectionType() });
+                    }
+                }
+            } catch (e) { }
+        }
+    }
+    var result = { requestId: requestId, method: method, ok: true, data: { devices: devices, links: links }, ts: ts };
+    __mcpLastResult = JSON.stringify(result); return JSON.stringify(result);
+}
+
+getDeviceConfig = function(device, start, end, requestId, method, ts) {
+    // Per-device tree cache (probe-validated: activityTreeToXml budget is per
+    // device, not per session — multiple devices per session are safe).
+    if (typeof __mcpXmlCacheByDevice == "undefined") { __mcpXmlCacheByDevice = {}; }
+    var xml = __mcpXmlCacheByDevice[device];
+    if (typeof xml == "undefined" || xml == null || xml == "") {
+        xml = String(ipc.network().getDevice(device).activityTreeToXml());
+        __mcpXmlCacheByDevice[device] = xml;
+    }
+    var result = { requestId: requestId, method: method, ok: true, data: {
+        chunk: xml.slice(start, end),
+        start: start,
+        end: end,
+        total: xml.length
+    }, ts: ts };
+    __mcpLastResult = JSON.stringify(result); return JSON.stringify(result);
 }
