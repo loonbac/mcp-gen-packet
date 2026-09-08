@@ -10,6 +10,9 @@ export interface BridgeAdapter {
   /** Get current execution mode */
   getMode(): ExecutionMode;
 
+  /** Get the bootstrap script for injection into PTBuilder */
+  bootstrapScript(): string;
+
   /** Start the adapter (if needed) */
   start(): void;
 

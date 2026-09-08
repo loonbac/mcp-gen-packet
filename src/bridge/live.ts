@@ -1,9 +1,10 @@
 import http, { IncomingMessage, ServerResponse } from "node:http";
 import { spawnSync } from "node:child_process";
 import type { BridgeAdapter } from "./adapter.js";
-import type { BridgeRequest, BridgeResponse, ExecutionMode, ToolResult } from "../types/protocol.js";
+import type { BridgeRequest, BridgeResponse, BridgeResult, ExecutionMode, ToolResult } from "../types/protocol.js";
 import { randomUUID } from "node:crypto";
 import { buildScript } from "./script-builder.js";
+import { buildBootstrapScript } from "./bootstrap.js";
 
 function uuid(): string {
   return randomUUID();
@@ -80,16 +81,31 @@ type BridgeEvent = {
   detail: string;
 };
 
+type PendingResult = {
+  resolve: (env: BridgeResult | null) => void;
+  timer: NodeJS.Timeout;
+  bytes: number;
+};
+
 export class LiveBridge implements BridgeAdapter {
   private static readonly POLLING_ACTIVE_THRESHOLD_MS = 5000;
   private static readonly CONNECTED_GRACE_MS = 900000;
   private static readonly PROCESS_CHECK_INTERVAL_MS = 2000;
+  private static readonly RESULT_TIMEOUT_MS = 20000;
+  private static readonly COMMAND_SPACING_MS = 500;
+  private static readonly WEDGE_THRESHOLD = 3;
+  private static readonly WEDGE_SUPPRESS_MS = 10000;
   private readonly host: string;
   private readonly port: number;
   private server: http.Server | null = null;
   private readonly commandQueue = new AsyncQueue();
   private readonly resultQueue = new AsyncQueue();
+  private readonly pendingResults = new Map<string, PendingResult>();
   private lastPollAt = 0;
+  private lastDispatchAt = 0;
+  private consecutiveTimeouts = 0;
+  private consecutiveSmallTimeouts = 0;
+  private wedgeBackoffUntil = 0;
   private listening = false;
   private pollCount = 0;
   private queuedCount = 0;
@@ -192,12 +208,33 @@ export class LiveBridge implements BridgeAdapter {
   }
 
   clearPendingResults() {
-    const dropped = this.resultQueue.clear();
-    if (dropped > 0) {
-      this.setEvent("result-clear", `Resultados pendientes descartados=${dropped}`);
-      this.debug(`resultQueue cleared dropped=${dropped}`);
+    const droppedResults = this.resultQueue.clear();
+    let droppedPending = 0;
+    for (const [, pending] of this.pendingResults) {
+      clearTimeout(pending.timer);
+      pending.resolve(null);
+      droppedPending += 1;
     }
-    return dropped;
+    this.pendingResults.clear();
+    const total = droppedResults + droppedPending;
+    if (total > 0) {
+      this.setEvent("result-clear", `Resultados pendientes descartados results=${droppedResults} pending=${droppedPending}`);
+      this.debug(`clearPendingResults results=${droppedResults} pending=${droppedPending}`);
+    }
+    return total;
+  }
+
+  // Rate-gated dequeue (D11): returns null if COMMAND_SPACING_MS has not elapsed
+  // since the last dispatch. The command stays queued for the next poll.
+  private tryDequeueRateGated(now: number): string | null {
+    if (now - this.lastDispatchAt < LiveBridge.COMMAND_SPACING_MS) {
+      return null;
+    }
+    const cmd = this.commandQueue.tryDequeue();
+    if (cmd !== null) {
+      this.lastDispatchAt = now;
+    }
+    return cmd;
   }
 
   async sendAndWait(jsCode: string, timeoutMs = 10000): Promise<string | null> {
@@ -206,23 +243,7 @@ export class LiveBridge implements BridgeAdapter {
   }
 
   bootstrapScript() {
-    const base = `http://${this.host}:${this.port}`;
-    const inner =
-      "(function(){var w=window;if(w.__MCP_PTB_TIMER){clearInterval(w.__MCP_PTB_TIMER);}w.__MCP_PTB_ERRORS=0;w.__MCP_PTB_TIMER=setInterval(function(){" +
-      "var x=new XMLHttpRequest();" +
-      `x.open('GET','${base}/next',true);` +
-      "x.timeout=1500;" +
-      "x.onload=function(){if(x.status===200){w.__MCP_PTB_ERRORS=0;if(x.responseText){" +
-      "$se('runCode',x.responseText);" +
-      "return;} }" +
-      "w.__MCP_PTB_ERRORS=(w.__MCP_PTB_ERRORS||0)+1;" +
-      "if(w.__MCP_PTB_ERRORS>=6&&w.__MCP_PTB_TIMER){clearInterval(w.__MCP_PTB_TIMER);w.__MCP_PTB_TIMER=null;}};" +
-      "x.onerror=function(){w.__MCP_PTB_ERRORS=(w.__MCP_PTB_ERRORS||0)+1;if(w.__MCP_PTB_ERRORS>=6&&w.__MCP_PTB_TIMER){clearInterval(w.__MCP_PTB_TIMER);w.__MCP_PTB_TIMER=null;}};" +
-      "x.ontimeout=x.onerror;" +
-      "x.send()" +
-      "},500);})();";
-
-    return inner;
+    return buildBootstrapScript(`http://${this.host}:${this.port}`);
   }
 
   private isPacketTracerRunning(): boolean {
@@ -256,10 +277,17 @@ export class LiveBridge implements BridgeAdapter {
     if (this.lastPacketTracerRunning === true && !packetTracerRunning) {
       const droppedCommands = this.commandQueue.clear();
       const droppedResults = this.resultQueue.clear();
+      let droppedPending = 0;
+      for (const [, pending] of this.pendingResults) {
+        clearTimeout(pending.timer);
+        pending.resolve(null);
+        droppedPending += 1;
+      }
+      this.pendingResults.clear();
       this.hasSeenPolling = false;
       this.lastPollAt = 0;
-      this.setEvent("queue-auto-cleared", `Packet Tracer cerrado: queued=${droppedCommands}, results=${droppedResults}`);
-      this.log(`auto-clear on Packet Tracer close queued=${droppedCommands} results=${droppedResults}`);
+      this.setEvent("queue-auto-cleared", `Packet Tracer cerrado: queued=${droppedCommands}, results=${droppedResults}, pending=${droppedPending}`);
+      this.log(`auto-clear on Packet Tracer close queued=${droppedCommands} results=${droppedResults} pending=${droppedPending}`);
     }
     this.lastPacketTracerRunning = packetTracerRunning;
 
@@ -378,8 +406,10 @@ export class LiveBridge implements BridgeAdapter {
 
     if (method === "GET" && url === "/next") {
       const wasConnected = this.getStatus().connected;
-      const cmd = this.commandQueue.tryDequeue() ?? "";
-      this.lastPollAt = Date.now();
+      const now = Date.now();
+      // Wedge backoff (D12): suppress dispatch entirely during backoff window
+      const cmd = this.wedgeBackoffUntil > now ? "" : (this.tryDequeueRateGated(now) ?? "");
+      this.lastPollAt = now;
       this.hasSeenPolling = true;
       this.pollCount += 1;
       this.setEvent(cmd.length > 0 ? "poll-dispatch" : "poll-idle", `dispatchBytes=${cmd.length} queueDepth=${this.commandQueue.length} polls=${this.pollCount}`);
@@ -441,10 +471,7 @@ export class LiveBridge implements BridgeAdapter {
 
     if (method === "POST" && url === "/result") {
       const body = await this.readBody(req);
-      this.resultQueue.enqueue(body);
-      this.resultCount += 1;
-      this.setEvent("result-post", `POST /result bytes=${body.length} pendingResults=${this.resultQueue.length}`);
-      this.debug(`POST /result bytes=${body.length}`);
+      this.handleResultPost(body);
       this.respond(res, 200, "ok");
       return;
     }
@@ -513,34 +540,125 @@ export class LiveBridge implements BridgeAdapter {
   }
 
   async execute(method: string, params: Record<string, unknown>): Promise<ToolResult> {
-    // Build the PTBuilder JS code for this command
-    const code = buildScript(method, params);
-    this.debug(`execute: ${method} -> ${code}`);
+    const requestId = uuid();
+    const ts = Date.now();
+
+    // Build the PTBuilder JS code — single-line __mcpLastResult= assignment (D7)
+    const code = buildScript(method, params, { requestId, ts });
+    this.debug(`execute: ${method} requestId=${requestId} ts=${ts} -> ${code}`);
 
     // If not connected, return script mode for manual execution
     if (!this.isConnected()) {
       return { mode: "script", data: { method, params }, code };
     }
 
-    // Enqueue the command — PT will pick it up via GET /next
+    // Enqueue the wrapped command — PT will pick it up via GET /next
     this.enqueue(code);
 
-    // Wait for result from PT via POST /result (timeout 20s)
-    const result = await this.resultQueue.dequeueWithTimeout(20000);
+    // Wait for correlated result via pendingResults (timeout 20s)
+    const bridgeResult = await this.waitForResult(requestId, code.length);
 
-    if (result === null) {
+    if (bridgeResult === null) {
       // Timeout — command was sent but no confirmation
       return {
         mode: "live",
-        data: { method, params, status: "queued_no_confirmation", code },
+        data: { method, params, status: "queued_no_confirmation", requestId, code },
       };
     }
 
-    const isError = result.toUpperCase().startsWith("ERROR");
-    if (isError) {
-      throw new Error(result);
+    if (!bridgeResult.ok) {
+      throw new Error(bridgeResult.error ?? "Unknown PT error");
     }
 
-    return { mode: "live", data: { method, params, result, code } };
+    return { mode: "live", data: { method, params, result: bridgeResult, code } };
+  }
+
+  private waitForResult(requestId: string, bytes: number): Promise<BridgeResult | null> {
+    return new Promise<BridgeResult | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingResults.delete(requestId);
+        this.registerTimeout(bytes);
+        resolve(null);
+      }, LiveBridge.RESULT_TIMEOUT_MS);
+
+      this.pendingResults.set(requestId, { resolve, timer, bytes });
+    });
+  }
+
+  // Wedge detection (D12): track consecutive timeouts; once the threshold is
+  // reached, suppress dispatch for WEDGE_SUPPRESS_MS and emit an event.
+  // Engine-degraded detection (D15): when the timed-out payload is small (<2KB,
+  // i.e. not a chunk command) count it; 3 consecutive small-payload timeouts
+  // emit engine-degraded-restart-pt advising a PT + bridge restart.
+  private registerTimeout(bytes: number): void {
+    this.consecutiveTimeouts += 1;
+    if (bytes < 2048) {
+      this.consecutiveSmallTimeouts += 1;
+    } else {
+      this.consecutiveSmallTimeouts = 0;
+    }
+    if (this.consecutiveTimeouts >= LiveBridge.WEDGE_THRESHOLD) {
+      this.wedgeBackoffUntil = Date.now() + LiveBridge.WEDGE_SUPPRESS_MS;
+      this.setEvent("engine-wedge-suspected", `consecutiveTimeouts=${this.consecutiveTimeouts}; dispatch suppressed for ${LiveBridge.WEDGE_SUPPRESS_MS}ms`);
+      this.log(`engine-wedge-suspected: consecutiveTimeouts=${this.consecutiveTimeouts}; suppressing dispatch ${LiveBridge.WEDGE_SUPPRESS_MS}ms`);
+    }
+    if (this.consecutiveSmallTimeouts >= LiveBridge.WEDGE_THRESHOLD) {
+      this.setEvent("engine-degraded-restart-pt", "Packet Tracer engine degraded; restart PT and the bridge module");
+      this.log("engine-degraded-restart-pt: 3 consecutive small-payload timeouts; advise PT + bridge restart");
+    }
+  }
+
+  handleResultPost(body: string): void {
+    // Try parse JSON — malformed → log-and-drop, never crash
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      this.setEvent("result-malformed", `POST /result malformed JSON bytes=${body.length}`);
+      this.debug(`handleResultPost malformed JSON bytes=${body.length}`);
+      return;
+    }
+
+    // Absent requestId → legacy resultQueue fallback (D4)
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("requestId" in parsed)
+    ) {
+      this.resultQueue.enqueue(body);
+      this.resultCount += 1;
+      this.setEvent("result-legacy", `POST /result no requestId -> resultQueue bytes=${body.length}`);
+      this.debug(`handleResultPost no requestId -> resultQueue bytes=${body.length}`);
+      return;
+    }
+
+    const { requestId } = parsed as { requestId: unknown };
+
+    // requestId present but non-string → log-and-drop (malformed)
+    if (typeof requestId !== "string") {
+      this.setEvent("result-malformed-request-id", `POST /result requestId non-string bytes=${body.length}`);
+      this.debug(`handleResultPost requestId non-string bytes=${body.length}`);
+      return;
+    }
+
+    const pending = this.pendingResults.get(requestId);
+
+    // Unknown requestId → late-result, log-and-drop
+    if (!pending) {
+      this.setEvent("late-result", `POST /result late requestId=${requestId}`);
+      this.debug(`handleResultPost late requestId=${requestId}`);
+      return;
+    }
+
+    // Known requestId → resolve, clear timer, delete entry, reset wedge counter (D12)
+    clearTimeout(pending.timer);
+    this.pendingResults.delete(requestId);
+    this.resultCount += 1;
+    this.consecutiveTimeouts = 0;
+    this.consecutiveSmallTimeouts = 0;
+    this.wedgeBackoffUntil = 0;
+    this.setEvent("result-correlated", `POST /result requestId=${requestId} ok=${(parsed as BridgeResult).ok}`);
+    this.debug(`handleResultPost correlated requestId=${requestId}`);
+    pending.resolve(parsed as BridgeResult);
   }
 }

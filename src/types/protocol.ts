@@ -13,6 +13,17 @@ export interface BridgeResponse {
   error?: { code: number; message: string };
 }
 
+// ── Result correlation envelope (WU1) ──
+
+export interface BridgeResult {
+  requestId: string;
+  method: string;
+  ok: boolean;
+  data?: unknown;
+  error?: string;
+  ts: number;
+}
+
 // ── Execution modes ──
 
 export type ExecutionMode = "live" | "script";

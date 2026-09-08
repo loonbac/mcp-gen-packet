@@ -34,6 +34,10 @@ class AutoBridge implements BridgeAdapter {
     return this.live.isConnected() ? "live" : "script";
   }
 
+  bootstrapScript(): string {
+    return this.live.bootstrapScript();
+  }
+
   async execute(method: string, params: Record<string, unknown>) {
     if (this.live.isConnected()) {
       return this.live.execute(method, params);
