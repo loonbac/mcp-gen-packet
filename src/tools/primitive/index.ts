@@ -7,6 +7,10 @@ export { configurePcIpTool, ConfigurePcIpSchema } from "./configure-pc-ip.js";
 export { configureIosDeviceTool, ConfigureIosDeviceSchema } from "./configure-ios-device.js";
 export { getDevicesTool, GetDevicesSchema } from "./get-devices.js";
 export { ptBridgeConnectTool, PtBridgeConnectSchema } from "./bridge-connect.js";
+export { getPcConfigTool, GetPcConfigSchema } from "./get-pc-config.js";
+export { getDeviceStateTool, GetDeviceStateSchema } from "./get-device-state.js";
+export { getTopologyTool, GetTopologySchema } from "./get-topology.js";
+export { getDeviceConfigTool, GetDeviceConfigSchema } from "./get-device-config.js";
 
 import { addDeviceTool } from "./add-device.js";
 import { addLinkTool } from "./add-link.js";
@@ -15,6 +19,10 @@ import { configurePcIpTool } from "./configure-pc-ip.js";
 import { configureIosDeviceTool } from "./configure-ios-device.js";
 import { getDevicesTool } from "./get-devices.js";
 import { ptBridgeConnectTool } from "./bridge-connect.js";
+import { getPcConfigTool } from "./get-pc-config.js";
+import { getDeviceStateTool } from "./get-device-state.js";
+import { getTopologyTool } from "./get-topology.js";
+import { getDeviceConfigTool } from "./get-device-config.js";
 
 import type { BridgeAdapter } from "../../bridge/adapter.js";
 import type { ToolResult } from "../../types/protocol.js";
@@ -36,6 +44,10 @@ export const primitiveTools: Tool[] = [
   configureIosDeviceTool,
   getDevicesTool,
   ptBridgeConnectTool,
+  getPcConfigTool,
+  getDeviceStateTool,
+  getTopologyTool,
+  getDeviceConfigTool,
 ];
 
 // Lookup function
