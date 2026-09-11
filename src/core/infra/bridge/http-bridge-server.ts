@@ -8,7 +8,9 @@ export interface HttpBridgeServerHooks {
   readonly getStatus: () => BridgeStatus;
   readonly onPoll: (at: number) => void;
   readonly onCommandQueued: () => void;
-  readonly onResultReceived: () => void;
+  readonly onResultReceived: (body: string) => void;
+  readonly isWedgeSuppressed?: () => boolean;
+  readonly getWedgeBackoffUntil?: () => number;
 }
 
 export type BridgeServerClock = () => number;
@@ -22,6 +24,8 @@ export interface HttpBridgeServerOptions {
   readonly events: EventBufferPort;
   readonly hooks: HttpBridgeServerHooks;
   readonly resultWaitTimeoutMs?: number;
+  readonly commandSpacingMs?: number;
+  readonly isWedgeSuppressed?: () => boolean;
   readonly clock?: BridgeServerClock;
   readonly monitorHtml?: () => string;
   readonly logger?: BridgeServerLogger;
@@ -34,6 +38,8 @@ export interface HttpBridgeServerOptions {
  * and result queueing routes (/next, /logs, /result, /queue).
  */
 export class HttpBridgeServer {
+  public static readonly COMMAND_SPACING_MS = 500;
+
   private readonly host: string;
   private readonly port: number;
   private readonly commandQueue: AsyncQueue<string>;
@@ -41,6 +47,8 @@ export class HttpBridgeServer {
   private readonly events: EventBufferPort;
   private readonly hooks: HttpBridgeServerHooks;
   private readonly resultWaitTimeoutMs: number;
+  private readonly commandSpacingMs: number;
+  private readonly isWedgeSuppressedOption?: () => boolean;
   private readonly clock: BridgeServerClock;
   private readonly monitorHtml: () => string;
   private readonly logger: BridgeServerLogger;
@@ -48,6 +56,7 @@ export class HttpBridgeServer {
   private server: http.Server | null = null;
   private listening = false;
   private starting = false;
+  private lastDispatchAt = 0;
 
   constructor(options: HttpBridgeServerOptions) {
     this.host = options.host;
@@ -57,6 +66,8 @@ export class HttpBridgeServer {
     this.events = options.events;
     this.hooks = options.hooks;
     this.resultWaitTimeoutMs = options.resultWaitTimeoutMs ?? 9000;
+    this.commandSpacingMs = options.commandSpacingMs ?? HttpBridgeServer.COMMAND_SPACING_MS;
+    this.isWedgeSuppressedOption = options.isWedgeSuppressed;
     this.clock = options.clock ?? Date.now;
     this.monitorHtml = options.monitorHtml ?? getMonitorHtml;
     this.logger =
@@ -145,8 +156,10 @@ export class HttpBridgeServer {
     }
 
     if (method === "GET" && url === "/next") {
-      const cmd = this.commandQueue.tryDequeue() ?? "";
-      this.hooks.onPoll(this.clock());
+      const now = this.clock();
+      const isSuppressed = this.isWedgeSuppressed(now);
+      const cmd = isSuppressed ? "" : (this.tryDequeueRateGated(now) ?? "");
+      this.hooks.onPoll(now);
       const status = this.hooks.getStatus();
       this.events.setEvent(
         cmd.length > 0 ? "poll-dispatch" : "poll-idle",
@@ -209,12 +222,11 @@ export class HttpBridgeServer {
 
     if (method === "POST" && url === "/result") {
       const body = await this.readBody(req);
-      this.resultQueue.enqueue(body);
-      this.hooks.onResultReceived();
       this.events.setEvent(
         "result-post",
         `POST /result bytes=${body.length} pendingResults=${this.resultQueue.length}`
       );
+      this.hooks.onResultReceived(body);
       this.respond(res, 200, "ok");
       return;
     }
@@ -234,6 +246,30 @@ export class HttpBridgeServer {
     }
 
     this.respond(res, 404, "");
+  }
+
+  private isWedgeSuppressed(now: number): boolean {
+    if (this.isWedgeSuppressedOption) {
+      return this.isWedgeSuppressedOption();
+    }
+    if (this.hooks.isWedgeSuppressed) {
+      return this.hooks.isWedgeSuppressed();
+    }
+    if (this.hooks.getWedgeBackoffUntil) {
+      return this.hooks.getWedgeBackoffUntil() > now;
+    }
+    return false;
+  }
+
+  private tryDequeueRateGated(now: number): string | null {
+    if (this.commandSpacingMs > 0 && now - this.lastDispatchAt < this.commandSpacingMs) {
+      return null;
+    }
+    const cmd = this.commandQueue.tryDequeue();
+    if (cmd !== null) {
+      this.lastDispatchAt = now;
+    }
+    return cmd;
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

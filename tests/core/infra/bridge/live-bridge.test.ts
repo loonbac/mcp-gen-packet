@@ -13,10 +13,12 @@ interface TestHarness {
   hooks: HttpBridgeServerHooks | null;
   serverState: { listening: boolean; started: number; stopped: number };
   currentTime: number;
+  setUuid: (id: string) => void;
 }
 
-function createHarness(): TestHarness {
+function createHarness(options?: Partial<import("../../../../src/core/infra/bridge/live-bridge.js").LiveBridgeOptions>): TestHarness {
   let currentTime = 1_000_000;
+  let currentUuid = "req-fixed-123";
   const detector = {
     running: false,
     isPacketTracerRunning: () => detector.running,
@@ -34,6 +36,8 @@ function createHarness(): TestHarness {
     resultQueue,
     clock: () => currentTime,
     logger: () => {},
+    uuidGenerator: () => currentUuid,
+    ...options,
     serverFactory: (opts) => {
       capturedHooks = opts.hooks;
       return {
@@ -65,6 +69,9 @@ function createHarness(): TestHarness {
     },
     set currentTime(t: number) {
       currentTime = t;
+    },
+    setUuid: (id: string) => {
+      currentUuid = id;
     },
   };
 }
@@ -150,7 +157,7 @@ describe("LiveBridge coordinator (S4d.2)", () => {
     expect(h.commandQueue.length).toBe(0);
   });
 
-  it("executes in live mode when connected, resolving result from resultQueue", async () => {
+  it("executes in live mode when connected, resolving result from handleResultPost", async () => {
     const h = createHarness();
     h.detector.running = true;
     h.hooks?.onPoll(h.currentTime);
@@ -163,14 +170,22 @@ describe("LiveBridge coordinator (S4d.2)", () => {
     const queuedCmd = h.commandQueue.tryDequeue();
     expect(queuedCmd).toContain("addDevice");
 
-    // Simulate PT returning result
-    h.resultQueue.enqueue("SUCCESS: R1 created");
+    // Simulate PT returning correlated result
+    h.bridge.handleResultPost(
+      JSON.stringify({
+        requestId: "req-fixed-123",
+        method: "add_device",
+        ok: true,
+        data: { name: "R1" },
+        ts: 1_000_000,
+      })
+    );
     const result = await execPromise;
 
     expect(result.mode).toBe("live");
     expect(result.data).toMatchObject({
       method: "add_device",
-      result: "SUCCESS: R1 created",
+      result: { ok: true, data: { name: "R1" } },
     });
   });
 
@@ -193,18 +208,36 @@ describe("LiveBridge coordinator (S4d.2)", () => {
     });
   });
 
-  it("throws Error when result starts with ERROR (case-insensitive)", async () => {
+  it("throws Error when bridge result returns ok: false", async () => {
     const h = createHarness();
     h.detector.running = true;
     h.hooks?.onPoll(h.currentTime);
 
+    h.setUuid("req-err-1");
     const p1 = h.bridge.execute("add_device", { name: "R1" });
-    h.resultQueue.enqueue("ERROR: Device model not recognized");
-    await expect(p1).rejects.toThrow("ERROR: Device model not recognized");
+    h.bridge.handleResultPost(
+      JSON.stringify({
+        requestId: "req-err-1",
+        method: "add_device",
+        ok: false,
+        error: "Device model not recognized",
+        ts: 1_000_000,
+      })
+    );
+    await expect(p1).rejects.toThrow("Device model not recognized");
 
+    h.setUuid("req-err-2");
     const p2 = h.bridge.execute("add_device", { name: "R2" });
-    h.resultQueue.enqueue("error: syntax invalid");
-    await expect(p2).rejects.toThrow("error: syntax invalid");
+    h.bridge.handleResultPost(
+      JSON.stringify({
+        requestId: "req-err-2",
+        method: "add_device",
+        ok: false,
+        error: "syntax invalid",
+        ts: 1_000_000,
+      })
+    );
+    await expect(p2).rejects.toThrow("syntax invalid");
   });
 
   it("sendAndWait enqueues command and awaits result with timeout", async () => {

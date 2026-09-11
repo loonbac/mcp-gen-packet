@@ -6,6 +6,7 @@ import * as path from "node:path";
 import type {
   BridgeRequest as CanonicalBridgeRequest,
   BridgeResponse as CanonicalBridgeResponse,
+  BridgeResult as CanonicalBridgeResult,
   ExecutionMode as CanonicalExecutionMode,
 } from "../../../src/core/types/bridge.js";
 import type { ToolResult as CanonicalToolResult } from "../../../src/core/types/tools.js";
@@ -27,6 +28,7 @@ import type { BridgeAdapter as CanonicalBridgeAdapter } from "../../../src/bridg
 import type {
   BridgeRequest as FacadeBridgeRequest,
   BridgeResponse as FacadeBridgeResponse,
+  BridgeResult as FacadeBridgeResult,
   ExecutionMode as FacadeExecutionMode,
   ToolResult as FacadeToolResult,
   DeviceEntry as FacadeDeviceEntry,
@@ -59,6 +61,7 @@ describe("Protocol Façade and Atomic Domain Types Compatibility", () => {
     it("asserts type identity between canonical bridge types and façade", () => {
       expectTypeOf<FacadeBridgeRequest>().toEqualTypeOf<CanonicalBridgeRequest>();
       expectTypeOf<FacadeBridgeResponse>().toEqualTypeOf<CanonicalBridgeResponse>();
+      expectTypeOf<FacadeBridgeResult>().toEqualTypeOf<CanonicalBridgeResult>();
       expectTypeOf<FacadeExecutionMode>().toEqualTypeOf<CanonicalExecutionMode>();
     });
 

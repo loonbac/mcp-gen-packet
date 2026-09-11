@@ -22,8 +22,12 @@ function createStatus(overrides?: Partial<BridgeStatus>): BridgeStatus {
 
 function createQueueServer(options?: {
   resultWaitTimeoutMs?: number;
+  commandSpacingMs?: number;
+  isWedgeSuppressed?: () => boolean;
+  getWedgeBackoffUntil?: () => number;
   clockNow?: number;
   onGetStatus?: () => BridgeStatus;
+  onResultReceived?: (body: string) => void;
 }) {
   const commandQueue = new AsyncQueue<string>();
   const resultQueue = new AsyncQueue<string>();
@@ -33,7 +37,14 @@ function createQueueServer(options?: {
     getStatus: vi.fn(options?.onGetStatus ?? (() => createStatus({ queueDepth: commandQueue.length }))),
     onPoll: vi.fn(),
     onCommandQueued: vi.fn(),
-    onResultReceived: vi.fn(),
+    onResultReceived: vi.fn(
+      options?.onResultReceived ??
+        ((body: string) => {
+          resultQueue.enqueue(body);
+        })
+    ),
+    isWedgeSuppressed: options?.isWedgeSuppressed,
+    getWedgeBackoffUntil: options?.getWedgeBackoffUntil,
   };
   const server = new HttpBridgeServer({
     host: "127.0.0.1",
@@ -43,10 +54,24 @@ function createQueueServer(options?: {
     events,
     hooks,
     resultWaitTimeoutMs: options?.resultWaitTimeoutMs ?? 9000,
+    commandSpacingMs: options?.commandSpacingMs ?? 0,
     clock: () => clockTime,
     logger: () => {},
   });
-  return { server, commandQueue, resultQueue, events, hooks };
+  return {
+    server,
+    commandQueue,
+    resultQueue,
+    events,
+    hooks,
+    getClockTime: () => clockTime,
+    setClockTime: (t: number) => {
+      clockTime = t;
+    },
+    advanceClock: (ms: number) => {
+      clockTime += ms;
+    },
+  };
 }
 
 async function waitForListening(server: HttpBridgeServer): Promise<void> {
@@ -113,6 +138,77 @@ describe("HttpBridgeServer queue & result routes (S4c.2)", () => {
       expect(await res2.text()).toBe("second");
       const res3 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
       expect(await res3.text()).toBe("");
+    });
+
+    it("enforces rate gating (commandSpacingMs) between dispatches", async () => {
+      const { server, commandQueue, advanceClock } = createQueueServer({
+        commandSpacingMs: 500,
+        clockNow: 1_000_000,
+      });
+      live.push(server);
+      commandQueue.enqueue("first");
+      commandQueue.enqueue("second");
+      server.start();
+      await waitForListening(server);
+
+      // First poll dispatches immediately
+      const res1 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res1.text()).toBe("first");
+
+      // Second poll 200ms later (< 500ms) gets rate-gated (empty body), command remains queued
+      advanceClock(200);
+      const res2 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res2.text()).toBe("");
+      expect(commandQueue.length).toBe(1);
+
+      // Third poll after 300ms more (500ms total elapsed) dispatches "second"
+      advanceClock(300);
+      const res3 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res3.text()).toBe("second");
+      expect(commandQueue.length).toBe(0);
+    });
+
+    it("suppresses dispatch during wedge backoff window", async () => {
+      let wedgeSuppressed = true;
+      const { server, commandQueue } = createQueueServer({
+        isWedgeSuppressed: () => wedgeSuppressed,
+      });
+      live.push(server);
+      commandQueue.enqueue("cmd-during-wedge");
+      server.start();
+      await waitForListening(server);
+
+      // While wedge suppressed, dispatch returns empty
+      const res1 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res1.text()).toBe("");
+      expect(commandQueue.length).toBe(1);
+
+      // Once wedge ends, next poll dispatches
+      wedgeSuppressed = false;
+      const res2 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res2.text()).toBe("cmd-during-wedge");
+      expect(commandQueue.length).toBe(0);
+    });
+
+    it("suppresses dispatch when getWedgeBackoffUntil is in the future", async () => {
+      const { server, commandQueue, advanceClock } = createQueueServer({
+        clockNow: 1_000_000,
+        getWedgeBackoffUntil: () => 1_010_000, // 10s in the future
+      });
+      live.push(server);
+      commandQueue.enqueue("cmd-backoff-time");
+      server.start();
+      await waitForListening(server);
+
+      const res1 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res1.text()).toBe("");
+      expect(commandQueue.length).toBe(1);
+
+      // Advance past backoff window
+      advanceClock(10_001);
+      const res2 = await fetch(`http://127.0.0.1:${server.getPort()}/next`);
+      expect(await res2.text()).toBe("cmd-backoff-time");
+      expect(commandQueue.length).toBe(0);
     });
   });
 

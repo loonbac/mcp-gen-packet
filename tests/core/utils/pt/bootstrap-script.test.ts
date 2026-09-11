@@ -62,4 +62,21 @@ describe("getBootstrapScript", () => {
     expect(script2).toContain("http://0.0.0.0:65535/next");
     expect(script2).toContain("},50);})();");
   });
+
+  it("handles custom baseUrl parameter", () => {
+    const script = getBootstrapScript({ baseUrl: "http://10.0.0.1:9999" });
+    expect(script).toContain("http://10.0.0.1:9999/next");
+    expect(script).toContain("},500);})();");
+  });
+
+  it("normalizes baseUrl by stripping trailing slashes", () => {
+    const script = getBootstrapScript({ baseUrl: "http://10.0.0.1:9999///" });
+    expect(script).toContain("http://10.0.0.1:9999/next");
+  });
+
+  it("combines baseUrl with custom intervalMs", () => {
+    const script = getBootstrapScript({ baseUrl: "http://example.com:8080", intervalMs: 1200 });
+    expect(script).toContain("http://example.com:8080/next");
+    expect(script).toContain("},1200);})();");
+  });
 });

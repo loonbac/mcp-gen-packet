@@ -16,7 +16,7 @@ export const ptBridgeConnectTool = {
   name: "packet_tracer_bridge_connect",
   description:
     "Returns the HTTP polling bootstrap script to inject into PTBuilder. " +
-    "The script polls http://localhost:54321/next every 500ms and executes commands via $se('runCode'). " +
+    "The script polls GET /next every 500ms and executes commands via $se('runCode'). " +
     "Paste the returned script into PTBuilder's Script Editor and click Run to connect.",
   inputSchema: PtBridgeConnectSchema,
 

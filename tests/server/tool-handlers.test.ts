@@ -291,7 +291,7 @@ describe("S5d: MCP Tool Handlers & Server Composition Root", () => {
       registerTools(dummyServer, mockBridge);
 
       expect(dummyServer.tool).toHaveBeenCalledTimes(allTools.length);
-      expect(dummyServer.tool).toHaveBeenCalledTimes(9);
+      expect(dummyServer.tool).toHaveBeenCalledTimes(13);
 
       for (const tool of allTools) {
         expect(dummyServer.tool).toHaveBeenCalledWith(

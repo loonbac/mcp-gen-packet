@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { ptBridgeConnectTool } from "../../../../src/tools/primitive/bridge-connect.js";
 import { LiveBridge } from "../../../../src/bridge/live.js";
 import { getBootstrapScript } from "../../../../src/core/utils/pt/bootstrap-script.js";
+import { buildBootstrapScript } from "../../../../src/bridge/bootstrap.js";
 import type { BridgeAdapter } from "../../../../src/bridge/adapter.js";
 
 describe("Bootstrap script delegations", () => {
@@ -27,5 +28,10 @@ describe("Bootstrap script delegations", () => {
     expect(defaultBridge.bootstrapScript()).toBe(
       getBootstrapScript({ host: "127.0.0.1", port: 54321 }),
     );
+  });
+
+  it("buildBootstrapScript delegates directly to getBootstrapScript({ baseUrl })", () => {
+    const baseUrl = "http://10.1.2.3:8080";
+    expect(buildBootstrapScript(baseUrl)).toBe(getBootstrapScript({ baseUrl }));
   });
 });

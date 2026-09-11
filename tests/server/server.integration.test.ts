@@ -23,16 +23,16 @@ describe("6.1 MCP Server Integration", () => {
   });
 
   describe("tool registration", () => {
-    it("should have 7 primitive tools", () => {
-      expect(primitiveTools).toHaveLength(7);
+    it("should have 11 primitive tools", () => {
+      expect(primitiveTools).toHaveLength(11);
     });
 
     it("should have 2 composite tools", () => {
       expect(compositeTools).toHaveLength(2);
     });
 
-    it("should have total of 9 tools", () => {
-      expect(allTools).toHaveLength(9);
+    it("should have total of 13 tools", () => {
+      expect(allTools).toHaveLength(13);
     });
 
     it("should be able to lookup primitive tool by name", () => {
