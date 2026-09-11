@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ZodError } from "zod";
 import type { BridgeAdapter } from "../../../src/bridge/adapter";
 import { createNetworkTool } from "../../../src/tools/composite/create-network";
 
@@ -120,5 +121,31 @@ describe("5.4 Create Network Composite Tool", () => {
     );
 
     expect(subnets.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("should reject invalid params via Zod before calling bridge", async () => {
+    const invalidParams = {
+      vlans: [],
+      hostsPerVlan: 2,
+    };
+
+    await expect(
+      createNetworkTool.execute(mockBridgeAdapter, invalidParams)
+    ).rejects.toThrow(ZodError);
+
+    expect(mockBridgeAdapter.execute).not.toHaveBeenCalled();
+  });
+
+  it("should reject invalid VLAN ID range before invoking bridge", async () => {
+    const invalidVlanParams = {
+      vlans: [{ id: 5000, name: "InvalidVlan" }],
+      hostsPerVlan: 0,
+    };
+
+    await expect(
+      createNetworkTool.execute(mockBridgeAdapter, invalidVlanParams)
+    ).rejects.toThrow(ZodError);
+
+    expect(mockBridgeAdapter.execute).not.toHaveBeenCalled();
   });
 });

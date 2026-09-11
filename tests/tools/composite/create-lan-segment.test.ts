@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ZodError } from "zod";
 import type { BridgeAdapter } from "../../../src/bridge/adapter";
 import type { ToolResult } from "../../../src/types/protocol";
 import { createLanSegmentTool } from "../../../src/tools/composite/create-lan-segment";
@@ -137,5 +138,31 @@ describe("5.4 Create LAN Segment Composite Tool", () => {
         expect(distance).toBeGreaterThanOrEqual(150);
       }
     }
+  });
+
+  it("should reject invalid params via Zod before calling bridge", async () => {
+    const invalidParams = {
+      name: "Sales",
+      subnet: "192.168.1.0",
+      hosts: 0,
+    };
+
+    await expect(
+      createLanSegmentTool.execute(mockBridgeAdapter, invalidParams)
+    ).rejects.toThrow(ZodError);
+
+    expect(mockBridgeAdapter.execute).not.toHaveBeenCalled();
+  });
+
+  it("should reject missing required fields before invoking bridge", async () => {
+    const missingParams = {
+      name: "Sales",
+    };
+
+    await expect(
+      createLanSegmentTool.execute(mockBridgeAdapter, missingParams)
+    ).rejects.toThrow(ZodError);
+
+    expect(mockBridgeAdapter.execute).not.toHaveBeenCalled();
   });
 });
