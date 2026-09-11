@@ -24,3 +24,7 @@ Thumbs.db
 
 # PT extension exports
 pt-extension/js/
+# Local Pi runtime state
+.atl/
+# Local Pi agent state
+.pi/

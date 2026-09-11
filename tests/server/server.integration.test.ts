@@ -12,7 +12,6 @@ const mockBridgeAdapter: BridgeAdapter = {
   execute: vi.fn(),
   isConnected: vi.fn().mockReturnValue(true),
   getMode: vi.fn().mockReturnValue("live"),
-  bootstrapScript: vi.fn().mockReturnValue("(function(){})();"),
   start: vi.fn(),
   stop: vi.fn(),
 };

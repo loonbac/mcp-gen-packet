@@ -1,33 +1,130 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { LiveBridge } from "../../src/bridge/live";
-import type { BridgeResult } from "../../src/types/protocol";
+import { LiveBridge } from "../../src/core/infra/bridge/live-bridge.js";
+import {
+  HttpBridgeServer,
+  type HttpBridgeServerHooks,
+} from "../../src/core/infra/bridge/http-bridge-server.js";
+import { EventBuffer } from "../../src/core/infra/bridge/event-buffer.js";
+import { AsyncQueue } from "../../src/core/utils/async/async-queue.js";
+import type { BridgeResult } from "../../src/types/protocol.js";
+
+interface TestHarness {
+  bridge: LiveBridge;
+  server: HttpBridgeServer;
+  serverHooks: HttpBridgeServerHooks;
+  commandQueue: AsyncQueue<string>;
+  resultQueue: AsyncQueue<string>;
+  events: EventBuffer;
+  detector: { running: boolean; isPacketTracerRunning: () => boolean };
+  clock: { now: number; advance: (ms: number) => void };
+  uuidGen: { nextId: string; set: (id: string) => void };
+  simulatePoll: () => void;
+}
+
+function createTestHarness(options?: {
+  executionTimeoutMs?: number;
+  commandSpacingMs?: number;
+}): TestHarness {
+  let currentTime = 1_000_000;
+  let currentUuid = "req-1";
+  const clock = {
+    get now() {
+      return currentTime;
+    },
+    advance: (ms: number) => {
+      currentTime += ms;
+    },
+  };
+  const uuidGen = {
+    get nextId() {
+      return currentUuid;
+    },
+    set: (id: string) => {
+      currentUuid = id;
+    },
+  };
+
+  const detector = {
+    running: true,
+    isPacketTracerRunning: () => detector.running,
+  };
+  const events = new EventBuffer(400);
+  const commandQueue = new AsyncQueue<string>();
+  const resultQueue = new AsyncQueue<string>();
+
+  let capturedServerHooks!: HttpBridgeServerHooks;
+  let serverInstance!: HttpBridgeServer;
+
+  const bridge = new LiveBridge("127.0.0.1", 54321, {
+    detector,
+    events,
+    commandQueue,
+    resultQueue,
+    clock: () => clock.now,
+    uuidGenerator: () => uuidGen.nextId,
+    executionTimeoutMs: options?.executionTimeoutMs ?? LiveBridge.DEFAULT_EXECUTION_TIMEOUT_MS,
+    commandSpacingMs: options?.commandSpacingMs ?? LiveBridge.COMMAND_SPACING_MS,
+    logger: () => {},
+    serverFactory: (serverOpts) => {
+      capturedServerHooks = serverOpts.hooks;
+      serverInstance = new HttpBridgeServer({
+        ...serverOpts,
+        port: 0,
+        clock: () => clock.now,
+      });
+      return {
+        start: () => {},
+        stop: () => {},
+        isListening: () => true,
+      };
+    },
+  });
+
+  const simulatePoll = () => {
+    bridge.getStatus();
+    capturedServerHooks.onPoll(clock.now);
+  };
+
+  return {
+    bridge,
+    get server() {
+      return serverInstance;
+    },
+    get serverHooks() {
+      return capturedServerHooks;
+    },
+    commandQueue,
+    resultQueue,
+    events,
+    detector,
+    clock,
+    uuidGen,
+    simulatePoll,
+  };
+}
 
 describe("LiveBridge correlation (WU2)", () => {
-  let bridge: LiveBridge;
+  let harness: TestHarness;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    bridge = new LiveBridge("127.0.0.1", 0);
+    harness = createTestHarness();
   });
 
   afterEach(() => {
     vi.useRealTimers();
-    bridge.stop();
+    harness.bridge.stop();
   });
-
-  const getPending = () =>
-    (bridge as any).pendingResults as Map<string, any>;
-
-  const getEvents = () =>
-    (bridge as any).events as Array<{ kind: string; detail: string; ts: string }>;
 
   // ── handleResultPost routing (tasks 2.1-2.4) ──
 
   describe("handleResultPost routing", () => {
-    it("2.1 known requestId resolves the pending promise with BridgeResult", () => {
-      const resolve = vi.fn();
-      const timer = setTimeout(() => {}, 10000);
-      getPending().set("req-1", { resolve, timer });
+    it("2.1 known requestId resolves the pending promise with BridgeResult", async () => {
+      harness.simulatePoll();
+      harness.uuidGen.set("req-1");
+      const execPromise = harness.bridge.execute("add_device", { name: "R1" });
+
+      expect(harness.bridge.getPendingResultsCount()).toBe(1);
 
       const body = JSON.stringify({
         requestId: "req-1",
@@ -36,14 +133,15 @@ describe("LiveBridge correlation (WU2)", () => {
         data: { name: "R1" },
         ts: 1,
       });
-      (bridge as any).handleResultPost(body);
+      harness.bridge.handleResultPost(body);
 
-      expect(resolve).toHaveBeenCalledTimes(1);
-      const arg = resolve.mock.calls[0][0] as BridgeResult;
-      expect(arg.requestId).toBe("req-1");
-      expect(arg.ok).toBe(true);
-      expect(arg.data).toEqual({ name: "R1" });
-      expect(getPending().has("req-1")).toBe(false);
+      const result = await execPromise;
+      expect(result.mode).toBe("live");
+      const bridgeResult = (result.data as { result: BridgeResult }).result;
+      expect(bridgeResult.requestId).toBe("req-1");
+      expect(bridgeResult.ok).toBe(true);
+      expect(bridgeResult.data).toEqual({ name: "R1" });
+      expect(harness.bridge.getPendingResultsCount()).toBe(0);
     });
 
     it("2.2 unknown requestId logs late-result event, does not crash", () => {
@@ -54,9 +152,9 @@ describe("LiveBridge correlation (WU2)", () => {
         ts: 1,
       });
 
-      expect(() => (bridge as any).handleResultPost(body)).not.toThrow();
+      expect(() => harness.bridge.handleResultPost(body)).not.toThrow();
 
-      const events = getEvents();
+      const events = harness.events.getRecent();
       const lateEvent = events.find((e) => e.kind === "late-result");
       expect(lateEvent).toBeDefined();
       expect(lateEvent!.detail).toContain("unknown-id");
@@ -64,10 +162,10 @@ describe("LiveBridge correlation (WU2)", () => {
 
     it("2.3 malformed JSON drops with event, never crashes", () => {
       expect(() =>
-        (bridge as any).handleResultPost("not valid json {{{")
+        harness.bridge.handleResultPost("not valid json {{{")
       ).not.toThrow();
 
-      const events = getEvents();
+      const events = harness.events.getRecent();
       const malformedEvent = events.find((e) => e.kind === "result-malformed");
       expect(malformedEvent).toBeDefined();
     });
@@ -80,9 +178,9 @@ describe("LiveBridge correlation (WU2)", () => {
         ts: 1,
       });
 
-      expect(() => (bridge as any).handleResultPost(body)).not.toThrow();
+      expect(() => harness.bridge.handleResultPost(body)).not.toThrow();
 
-      const events = getEvents();
+      const events = harness.events.getRecent();
       const malformedEvent = events.find(
         (e) => e.kind === "result-malformed-request-id"
       );
@@ -95,9 +193,9 @@ describe("LiveBridge correlation (WU2)", () => {
         ok: true,
         ts: 1,
       });
-      (bridge as any).handleResultPost(body);
+      harness.bridge.handleResultPost(body);
 
-      expect((bridge as any).resultQueue.length).toBe(1);
+      expect(harness.resultQueue.length).toBe(1);
     });
   });
 
@@ -105,128 +203,118 @@ describe("LiveBridge correlation (WU2)", () => {
 
   describe("execute() correlation", () => {
     beforeEach(() => {
-      vi.spyOn(bridge, "isConnected").mockReturnValue(true);
+      harness.simulatePoll();
     });
 
     it("2.5 20s timeout resolves with queued_no_confirmation + requestId", async () => {
-      const execPromise = bridge.execute("add_device", {
+      harness.uuidGen.set("req-timeout-1");
+      const execPromise = harness.bridge.execute("add_device", {
         name: "R1",
         model: "2911",
       });
 
-      const pending = getPending();
-      expect(pending.size).toBe(1);
-      const requestId = Array.from(pending.keys())[0];
-      expect(requestId).toBeDefined();
-      expect(typeof requestId).toBe("string");
+      expect(harness.bridge.getPendingResultsCount()).toBe(1);
 
+      harness.clock.advance(20000);
       await vi.advanceTimersByTimeAsync(20000);
 
       const result = await execPromise;
       expect(result.mode).toBe("live");
-      expect(result.data.status).toBe("queued_no_confirmation");
-      expect(result.data.requestId).toBe(requestId);
-      expect(pending.size).toBe(0);
+      expect((result.data as { status: string }).status).toBe("queued_no_confirmation");
+      expect((result.data as { requestId: string }).requestId).toBe("req-timeout-1");
+      expect(harness.bridge.getPendingResultsCount()).toBe(0);
     });
 
     it("2.6 late result after timeout is logged, never resolves settled call", async () => {
-      const execPromise = bridge.execute("add_device", {
+      harness.uuidGen.set("req-late-1");
+      const execPromise = harness.bridge.execute("add_device", {
         name: "R1",
         model: "2911",
       });
 
-      const pending = getPending();
-      const requestId = Array.from(pending.keys())[0];
-
+      harness.clock.advance(20000);
       await vi.advanceTimersByTimeAsync(20000);
       const result = await execPromise;
-      expect(result.data.status).toBe("queued_no_confirmation");
+      expect((result.data as { status: string }).status).toBe("queued_no_confirmation");
 
       // Post a late result after timeout
       const lateBody = JSON.stringify({
-        requestId,
+        requestId: "req-late-1",
         method: "add_device",
         ok: true,
         data: { name: "R1" },
         ts: 1,
       });
-      (bridge as any).handleResultPost(lateBody);
+      harness.bridge.handleResultPost(lateBody);
 
-      const events = getEvents();
+      const events = harness.events.getRecent();
       const lateEvent = events.find((e) => e.kind === "late-result");
       expect(lateEvent).toBeDefined();
     });
 
     it("2.7 ok=false throws error", async () => {
-      const execPromise = bridge.execute("add_device", {
+      harness.uuidGen.set("req-err-1");
+      const execPromise = harness.bridge.execute("add_device", {
         name: "R1",
         model: "2911",
       });
 
-      const pending = getPending();
-      const requestId = Array.from(pending.keys())[0];
-
       const body = JSON.stringify({
-        requestId,
+        requestId: "req-err-1",
         method: "add_device",
         ok: false,
         error: "Device already exists",
         ts: 1,
       });
-      (bridge as any).handleResultPost(body);
+      harness.bridge.handleResultPost(body);
 
       await expect(execPromise).rejects.toThrow("Device already exists");
     });
 
     it("2.7b ok=true resolves with BridgeResult data", async () => {
-      const execPromise = bridge.execute("add_device", {
+      harness.uuidGen.set("req-ok-1");
+      const execPromise = harness.bridge.execute("add_device", {
         name: "R1",
         model: "2911",
       });
 
-      const pending = getPending();
-      const requestId = Array.from(pending.keys())[0];
-
       const body = JSON.stringify({
-        requestId,
+        requestId: "req-ok-1",
         method: "add_device",
         ok: true,
         data: { name: "R1" },
         ts: 1,
       });
-      (bridge as any).handleResultPost(body);
+      harness.bridge.handleResultPost(body);
 
       const result = await execPromise;
       expect(result.mode).toBe("live");
-      expect(result.data.result).toBeDefined();
-      expect(result.data.result.ok).toBe(true);
-      expect(result.data.result.data).toEqual({ name: "R1" });
+      const bridgeResult = (result.data as { result: BridgeResult }).result;
+      expect(bridgeResult).toBeDefined();
+      expect(bridgeResult.ok).toBe(true);
+      expect(bridgeResult.data).toEqual({ name: "R1" });
     });
 
     it("execute enqueues wrapped script containing requestId", async () => {
-      const enqueueSpy = vi.spyOn(bridge, "enqueue");
-
-      const execPromise = bridge.execute("add_device", {
+      harness.uuidGen.set("req-wrap-1");
+      const execPromise = harness.bridge.execute("add_device", {
         name: "R1",
         model: "2911",
       });
 
-      const pending = getPending();
-      const requestId = Array.from(pending.keys())[0];
-
-      expect(enqueueSpy).toHaveBeenCalled();
-      const enqueuedCode = enqueueSpy.mock.calls[0][0];
-      expect(enqueuedCode).toContain(requestId);
+      expect(harness.commandQueue.length).toBe(1);
+      const enqueuedCode = harness.commandQueue.tryDequeue()!;
+      expect(enqueuedCode).toContain("req-wrap-1");
       expect(enqueuedCode).toContain("requestId");
 
       // Resolve to clean up
       const body = JSON.stringify({
-        requestId,
+        requestId: "req-wrap-1",
         method: "add_device",
         ok: true,
         ts: 1,
       });
-      (bridge as any).handleResultPost(body);
+      harness.bridge.handleResultPost(body);
       await execPromise;
     });
   });
@@ -235,27 +323,45 @@ describe("LiveBridge correlation (WU2)", () => {
 
   describe("PT close auto-clear", () => {
     it("2.8 PT close auto-clear extends to pendingResults", () => {
-      const spy = vi
-        .spyOn(bridge as any, "isPacketTracerRunning")
-        .mockReturnValue(true);
+      harness.simulatePoll();
+      harness.detector.running = true;
 
       // First call sets lastPacketTracerRunning = true
-      bridge.getStatus();
+      harness.bridge.getStatus();
+
+      // Enqueue a pending command
+      harness.uuidGen.set("test-id");
+      harness.bridge.execute("add_device", { name: "R1" });
+      expect(harness.bridge.getPendingResultsCount()).toBe(1);
 
       // Now PT closes
-      spy.mockReturnValue(false);
-
-      // Add a pending result
-      const timer = setTimeout(() => {}, 10000);
-      getPending().set("test-id", { resolve: vi.fn(), timer });
-      expect(getPending().size).toBe(1);
+      harness.detector.running = false;
 
       // Call getStatus — should detect PT close and auto-clear
-      bridge.getStatus();
+      harness.bridge.getStatus();
 
-      expect(getPending().size).toBe(0);
+      expect(harness.bridge.getPendingResultsCount()).toBe(0);
+      expect(harness.events.getLastEvent()).toBe("queue-auto-cleared");
+    });
+  });
 
-      spy.mockRestore();
+  // ── clearPendingResults ──
+
+  describe("clearPendingResults", () => {
+    it("clears all pending results and returns count", () => {
+      harness.simulatePoll();
+
+      harness.uuidGen.set("clear-1");
+      harness.bridge.execute("add_device", { name: "R1" });
+      harness.uuidGen.set("clear-2");
+      harness.bridge.execute("add_device", { name: "R2" });
+
+      expect(harness.bridge.getPendingResultsCount()).toBe(2);
+
+      const cleared = harness.bridge.clearPendingResults();
+      expect(cleared).toBe(2);
+      expect(harness.bridge.getPendingResultsCount()).toBe(0);
+      expect(harness.events.getLastEvent()).toBe("result-clear");
     });
   });
 
@@ -263,13 +369,13 @@ describe("LiveBridge correlation (WU2)", () => {
 
   describe("bootstrap v3", () => {
     it("2.9 bootstrapScript does NOT contain __mcpPost (D13)", () => {
-      const script = bridge.bootstrapScript();
+      const script = harness.bridge.bootstrapScript();
       expect(script).not.toContain("__mcpPost");
       expect(script).not.toContain("window.__mcpPost");
     });
 
     it("2.9b bootstrapScript keeps /next polling", () => {
-      const script = bridge.bootstrapScript();
+      const script = harness.bridge.bootstrapScript();
       expect(script).toContain("/next");
       expect(script).toContain("$se('runCode'");
     });
@@ -279,70 +385,111 @@ describe("LiveBridge correlation (WU2)", () => {
 
   describe("rate gate (D11)", () => {
     it("3.9 holds 2nd command when <500ms since last dispatch", () => {
-      // First dispatch at t=0
-      const first = (bridge as any).tryDequeueRateGated(0);
-      // Queue a command then immediately try again — should be rate-gated
-      bridge.enqueue("CMD1");
-      const dequeue = (bridge as any).tryDequeueRateGated.bind(bridge);
-      // lastDispatchAt is now 0; at t=100 (<500) it must return null
-      expect(dequeue(100)).toBeNull();
-      // At t=500 (>=500 since last dispatch at 0) it must dispatch
-      expect(dequeue(500)).toBe("CMD1");
+      const h = createTestHarness({ commandSpacingMs: 500 });
+      h.commandQueue.enqueue("CMD1");
+      h.commandQueue.enqueue("CMD2");
+
+      // First dispatch at t=1,000,000
+      const first = (h.server as any).tryDequeueRateGated(h.clock.now);
+      expect(first).toBe("CMD1");
+
+      // At t=1,000,100 (<500ms elapsed), should be rate-gated (null)
+      h.clock.advance(100);
+      const blocked = (h.server as any).tryDequeueRateGated(h.clock.now);
+      expect(blocked).toBeNull();
+      expect(h.commandQueue.length).toBe(1);
+
+      // At t=1,000,500 (500ms elapsed since dispatch), dispatches CMD2
+      h.clock.advance(400);
+      const second = (h.server as any).tryDequeueRateGated(h.clock.now);
+      expect(second).toBe("CMD2");
+      expect(h.commandQueue.length).toBe(0);
     });
 
     it("3.10 updates lastDispatchAt only on actual dispatch", () => {
-      bridge.enqueue("CMD2");
-      const dequeue = (bridge as any).tryDequeueRateGated.bind(bridge);
-      const before = (bridge as any).lastDispatchAt;
-      // Rate-gated call does not touch lastDispatchAt
-      dequeue(before + 100);
-      expect((bridge as any).lastDispatchAt).toBe(before);
-      // Successful dispatch updates it
-      const now = before + 500;
-      dequeue(now);
-      expect((bridge as any).lastDispatchAt).toBe(now);
+      const h = createTestHarness({ commandSpacingMs: 500 });
+      h.commandQueue.enqueue("CMD2");
+
+      // First dispatch at T=1000 (>=500ms from initial 0)
+      const first = (h.server as any).tryDequeueRateGated(1000);
+      expect(first).toBe("CMD2");
+      expect((h.server as any).lastDispatchAt).toBe(1000);
+
+      // Attempt dispatch 100ms later at T=1100 (<500ms since lastDispatchAt=1000)
+      h.commandQueue.enqueue("CMD3");
+      const blocked = (h.server as any).tryDequeueRateGated(1100);
+      expect(blocked).toBeNull();
+      expect((h.server as any).lastDispatchAt).toBe(1000);
+
+      // Successful dispatch after 500ms updates it
+      const nextTime = 1000 + 500;
+      const ok = (h.server as any).tryDequeueRateGated(nextTime);
+      expect(ok).toBe("CMD3");
+      expect((h.server as any).lastDispatchAt).toBe(nextTime);
     });
   });
 
   // ── wedge detection (D12) — tasks 3.11/3.12/3.13/3.14 ──
 
   describe("wedge detection (D12)", () => {
-    it("3.11 three consecutive timeouts trigger wedge suppression + event", () => {
-      // Simulate 3 timeouts via the private registerTimeout path
-      (bridge as any).registerTimeout();
-      (bridge as any).registerTimeout();
-      (bridge as any).registerTimeout();
+    it("3.11 three consecutive timeouts trigger wedge suppression + event", async () => {
+      const h = createTestHarness({ executionTimeoutMs: 5000 });
+      h.simulatePoll();
 
-      const events = getEvents();
+      for (let i = 1; i <= 3; i++) {
+        h.uuidGen.set(`to-${i}`);
+        const p = h.bridge.execute("add_device", { name: `D-${i}` });
+        h.clock.advance(5000);
+        await vi.advanceTimersByTimeAsync(5000);
+        await p;
+      }
+
+      const events = h.events.getRecent();
       const wedgeEvent = events.find((e) => e.kind === "engine-wedge-suspected");
       expect(wedgeEvent).toBeDefined();
-      expect((bridge as any).consecutiveTimeouts).toBe(3);
-      expect((bridge as any).wedgeBackoffUntil).toBeGreaterThan(0);
+      expect(h.bridge.getConsecutiveTimeouts()).toBe(3);
+      expect(h.bridge.getWedgeBackoffUntil()).toBeGreaterThan(0);
+      expect(h.bridge.isWedgeSuppressed()).toBe(true);
     });
 
-    it("3.12 wedge backoff suppresses /next dispatch", () => {
-      // Force wedge state
-      (bridge as any).wedgeBackoffUntil = Date.now() + 10000;
-      bridge.enqueue("HELD");
+    it("3.12 wedge backoff suppresses /next dispatch", async () => {
+      const h = createTestHarness({ executionTimeoutMs: 5000 });
+      h.simulatePoll();
 
-      // Hit the /next handler directly via handleRequest is complex; assert
-      // the dequeue gate used by /next returns "" during backoff.
-      const now = Date.now();
-      const cmd = (bridge as any).wedgeBackoffUntil > now ? "" : (bridge as any).tryDequeueRateGated(now) ?? "";
-      expect(cmd).toBe("");
-      expect((bridge as any).commandQueue.length).toBe(1);
+      // Trigger wedge by 3 timeouts
+      for (let i = 1; i <= 3; i++) {
+        h.uuidGen.set(`to-${i}`);
+        const p = h.bridge.execute("add_device", { name: `D-${i}` });
+        h.clock.advance(5000);
+        await vi.advanceTimersByTimeAsync(5000);
+        await p;
+      }
+
+      expect(h.bridge.isWedgeSuppressed()).toBe(true);
+      expect((h.server as any).isWedgeSuppressed(h.clock.now)).toBe(true);
+
+      h.commandQueue.clear();
+      h.commandQueue.enqueue("HELD");
+      expect(h.commandQueue.length).toBe(1);
     });
 
-    it("3.13 counter resets on correlated result arrival", () => {
-      const resolve = vi.fn();
-      const timer = setTimeout(() => {}, 10000);
-      getPending().set("req-wedge", { resolve, timer });
-      // Build up consecutive timeouts
-      (bridge as any).registerTimeout();
-      (bridge as any).registerTimeout();
-      expect((bridge as any).consecutiveTimeouts).toBe(2);
+    it("3.13 counter resets on correlated result arrival", async () => {
+      const h = createTestHarness({ executionTimeoutMs: 5000 });
+      h.simulatePoll();
+
+      // 2 timeouts
+      for (let i = 1; i <= 2; i++) {
+        h.uuidGen.set(`to-${i}`);
+        const p = h.bridge.execute("add_device", { name: `D-${i}` });
+        h.clock.advance(5000);
+        await vi.advanceTimersByTimeAsync(5000);
+        await p;
+      }
+      expect(h.bridge.getConsecutiveTimeouts()).toBe(2);
 
       // Correlated result arrives
+      h.uuidGen.set("req-wedge");
+      const pSuccess = h.bridge.execute("add_device", { name: "Recover" });
       const body = JSON.stringify({
         requestId: "req-wedge",
         method: "add_device",
@@ -350,52 +497,79 @@ describe("LiveBridge correlation (WU2)", () => {
         data: {},
         ts: 1,
       });
-      (bridge as any).handleResultPost(body);
+      h.bridge.handleResultPost(body);
+      await pSuccess;
 
-      expect((bridge as any).consecutiveTimeouts).toBe(0);
-      expect((bridge as any).wedgeBackoffUntil).toBe(0);
+      expect(h.bridge.getConsecutiveTimeouts()).toBe(0);
+      expect(h.bridge.getWedgeBackoffUntil()).toBe(0);
+      expect(h.bridge.isWedgeSuppressed()).toBe(false);
     });
 
-    it("3.14 wedge threshold is exactly 3 (not 2, not 4)", () => {
-      // 2 timeouts — no wedge event yet
-      (bridge as any).registerTimeout();
-      (bridge as any).registerTimeout();
-      let wedgeEvent = getEvents().filter((e) => e.kind === "engine-wedge-suspected");
-      expect(wedgeEvent.length).toBe(0);
+    it("3.14 wedge threshold is exactly 3 (not 2, not 4)", async () => {
+      const h = createTestHarness({ executionTimeoutMs: 5000 });
+      h.simulatePoll();
+
+      // 2 timeouts
+      for (let i = 1; i <= 2; i++) {
+        h.uuidGen.set(`to-${i}`);
+        const p = h.bridge.execute("add_device", { name: `D-${i}` });
+        h.clock.advance(5000);
+        await vi.advanceTimersByTimeAsync(5000);
+        await p;
+      }
+      let wedgeEvents = h.events.getRecent().filter((e) => e.kind === "engine-wedge-suspected");
+      expect(wedgeEvents.length).toBe(0);
 
       // 3rd timeout triggers
-      (bridge as any).registerTimeout();
-      wedgeEvent = getEvents().filter((e) => e.kind === "engine-wedge-suspected");
-      expect(wedgeEvent.length).toBe(1);
+      h.uuidGen.set("to-3");
+      const p3 = h.bridge.execute("add_device", { name: "D-3" });
+      h.clock.advance(5000);
+      await vi.advanceTimersByTimeAsync(5000);
+      await p3;
+
+      wedgeEvents = h.events.getRecent().filter((e) => e.kind === "engine-wedge-suspected");
+      expect(wedgeEvents.length).toBe(1);
     });
   });
 
   // ── engine-degraded detection (D15) ──
 
   describe("engine-degraded detection (D15)", () => {
-    it("3.16 five consecutive small-payload timeouts emit engine-degraded-restart-pt", () => {
-      // payloads <2048 bytes (not chunk commands) timing out 3x → degraded
-      (bridge as any).registerTimeout(500);
-      (bridge as any).registerTimeout(1024);
-      (bridge as any).registerTimeout(2047);
+    it("3.16 three consecutive small-payload timeouts emit engine-degraded-restart-pt", async () => {
+      const h = createTestHarness({ executionTimeoutMs: 1000 });
+      h.simulatePoll();
 
-      const events = getEvents();
+      for (let i = 1; i <= 3; i++) {
+        h.uuidGen.set(`small-${i}`);
+        const p = h.bridge.execute("add_device", { name: `small-${i}` });
+        h.clock.advance(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+        await p;
+      }
+
+      const events = h.events.getRecent();
       const degradedEvent = events.find((e) => e.kind === "engine-degraded-restart-pt");
       expect(degradedEvent).toBeDefined();
       expect(degradedEvent!.detail).toContain("restart PT");
-      expect((bridge as any).consecutiveSmallTimeouts).toBe(3);
+      expect(h.bridge.getConsecutiveSmallTimeouts()).toBe(3);
     });
 
-    it("3.16b large-payload timeouts do NOT emit engine-degraded (chunk transport wedge only)", () => {
-      // payloads >=2048 bytes count as chunk commands → wedge suspected, not degraded
-      (bridge as any).registerTimeout(4096);
-      (bridge as any).registerTimeout(8192);
-      (bridge as any).registerTimeout(4096);
+    it("3.16b large-payload timeouts do NOT emit engine-degraded (chunk transport wedge only)", async () => {
+      const h = createTestHarness({ executionTimeoutMs: 1000 });
+      h.simulatePoll();
 
-      const events = getEvents();
+      for (let i = 1; i <= 3; i++) {
+        h.uuidGen.set(`large-${i}`);
+        const p = h.bridge.execute("add_device", { name: "x".repeat(2500) });
+        h.clock.advance(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+        await p;
+      }
+
+      const events = h.events.getRecent();
       expect(events.some((e) => e.kind === "engine-degraded-restart-pt")).toBe(false);
       expect(events.some((e) => e.kind === "engine-wedge-suspected")).toBe(true);
-      expect((bridge as any).consecutiveSmallTimeouts).toBe(0);
+      expect(h.bridge.getConsecutiveSmallTimeouts()).toBe(0);
     });
   });
 
@@ -403,8 +577,8 @@ describe("LiveBridge correlation (WU2)", () => {
 
   describe("cleanup (no temp diagnostics)", () => {
     it("3.15 malformed JSON event has no hex dump", () => {
-      (bridge as any).handleResultPost("not valid json {{{");
-      const events = getEvents();
+      harness.bridge.handleResultPost("not valid json {{{");
+      const events = harness.events.getRecent();
       const malformedEvent = events.find((e) => e.kind === "result-malformed");
       expect(malformedEvent).toBeDefined();
       expect(malformedEvent!.detail).not.toContain("hex=");
@@ -412,7 +586,7 @@ describe("LiveBridge correlation (WU2)", () => {
     });
 
     it("3.15b no ws-upgrade-attempt event is ever emitted", () => {
-      const events = getEvents();
+      const events = harness.events.getRecent();
       expect(events.some((e) => e.kind === "ws-upgrade-attempt")).toBe(false);
     });
   });

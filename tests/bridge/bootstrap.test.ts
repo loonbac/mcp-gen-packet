@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildBootstrapScript } from "../../src/bridge/bootstrap";
+import { getBootstrapScript } from "../../src/core/utils/pt/bootstrap-script.js";
 
 describe("buildBootstrapScript (v3 — polling only, no __mcpPost)", () => {
   it("returns a non-empty string", () => {
@@ -37,5 +38,10 @@ describe("buildBootstrapScript (v3 — polling only, no __mcpPost)", () => {
   it("still uses XMLHttpRequest for /next polling (engine constraint)", () => {
     const script = buildBootstrapScript("http://localhost:54321");
     expect(script).toContain("XMLHttpRequest");
+  });
+
+  it("delegates directly to getBootstrapScript with baseUrl", () => {
+    const url = "http://127.0.0.1:54321";
+    expect(buildBootstrapScript(url)).toBe(getBootstrapScript({ baseUrl: url }));
   });
 });

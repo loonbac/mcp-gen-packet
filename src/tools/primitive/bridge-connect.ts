@@ -4,6 +4,7 @@
 import { z } from "zod";
 import type { BridgeAdapter } from "../../bridge/adapter.js";
 import type { ToolResult } from "../../types/protocol.js";
+import { getBootstrapScript } from "../../core/utils/pt/bootstrap-script.js";
 
 export const PtBridgeConnectSchema = z.object({
   // No required parameters - this tool returns the bootstrap script
@@ -16,18 +17,17 @@ export const ptBridgeConnectTool = {
   description:
     "Returns the HTTP polling bootstrap script to inject into PTBuilder. " +
     "The script polls GET /next every 500ms and executes commands via $se('runCode'). " +
-    "It also defines window.__mcpPost for bounded-retry POST /result (result correlation). " +
     "Paste the returned script into PTBuilder's Script Editor and click Run to connect.",
   inputSchema: PtBridgeConnectSchema,
 
-  execute: async (bridge: BridgeAdapter, _params: unknown): Promise<ToolResult> => {
+  execute: async (_bridge: BridgeAdapter, _params: unknown): Promise<ToolResult> => {
     PtBridgeConnectSchema.parse(_params);
 
-    // Delegates to the adapter's bootstrap script (single source of truth)
+    // Return the bootstrap script directly - user pastes it into PTBuilder
     return {
       mode: "script",
       data: {},
-      code: bridge.bootstrapScript(),
+      code: getBootstrapScript(),
     };
   },
 };
