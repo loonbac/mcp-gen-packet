@@ -7,6 +7,7 @@ import type { BridgeAdapter } from "./bridge/adapter.js";
 import { allTools } from "./tools/index.js";
 import { registerCatalogResources } from "./server/handlers/resources/register-resources.js";
 import { registerTools } from "./server/handlers/tools/register-tools.js";
+import { registerPrompts } from "./server/handlers/prompts/register-prompts.js";
 
 /**
  * Create and configure the MCP server with all tools and resources.
@@ -22,6 +23,7 @@ export function createMcpServer(bridgeOverride?: BridgeAdapter): McpServer {
 
   registerCatalogResources(server);
   registerTools(server, bridge, allTools);
+  registerPrompts(server);
 
   return server;
 }
