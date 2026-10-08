@@ -11,6 +11,7 @@ import { kimiClient } from "./kimi.js";
 import { kiroClient } from "./kiro.js";
 import { qwenClient } from "./qwen.js";
 import { antigravityClient } from "./antigravity.js";
+import { commandCodeClient } from "./command-code.js";
 
 export const ALL_CLIENTS: MCPClient[] = [
   opencodeClient,
@@ -25,6 +26,7 @@ export const ALL_CLIENTS: MCPClient[] = [
   kiroClient,
   qwenClient,
   antigravityClient,
+  commandCodeClient,
 ];
 
 export function getAvailableClients(): MCPClient[] {

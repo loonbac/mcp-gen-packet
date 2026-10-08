@@ -24,7 +24,7 @@ Y el agente IA lo construye por ti.
 | Característica | Descripción |
 |----------------|-------------|
 | **Zero-Config** | Auto-build, auto-detección de clientes MCP y verificación de extensiones |
-| **12 Clientes Soportados** | OpenCode, Claude, VSCode, Cursor, Gemini, Codex, Windsurf, KiloCode, Kimi, Kiro, Qwen, Antigravity |
+| **13 Clientes Soportados** | OpenCode, Claude, VSCode, Cursor, Gemini, Codex, Windsurf, KiloCode, Kimi, Kiro, Qwen, Antigravity, Command Code |
 | **Auto-Layout** | Posicionamiento automático de dispositivos con algoritmo inteligente |
 | **Catálogos Integrados** | +100 dispositivos, módulos, enlaces e interfaces pre-configurados |
 | **Ejecución en Tiempo Real** | Bridge WebSocket bidireccional con Packet Tracer (live mode) |
@@ -82,11 +82,12 @@ El instalador TUI hace lo siguiente:
   ❌ Kiro               — no detectado
   ❌ Qwen               — no detectado
   ✅ Antigravity        — detectado      (pre-seleccionado)
+  ❌ Command Code       — no detectado
 
   → Los clientes con ✅ están pre-seleccionados. Presiona Enter para configurarlos.
 
 ✓ Node.js v25.9.0 detectado
-✓ 12 clientes soportados, 3 detectados
+✓ 13 clientes soportados, 3 detectados
 ✓ Dependencias instaladas
 ✓ BridgeBuilder.pts encontrado
 ✓ 3 cliente(s) configurado(s)
@@ -151,6 +152,7 @@ Y el agente lo construye por ti.
 | Kiro | `kiro` | ✅ |
 | Qwen | `qwen` | ✅ |
 | Antigravity | `antigravity` | ✅ |
+| Command Code | `command-code` | ✅ |
 
 ## Herramientas Disponibles
 
