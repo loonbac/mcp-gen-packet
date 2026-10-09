@@ -1,34 +1,24 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ClientDescriptor } from "../../engine/client-descriptor.js";
+import { createMcpServersDescriptor } from "./create-mcp-servers-descriptor.js";
 
 /**
  * Declarative descriptor for Command Code.
  * Configures servers under `mcpServers.MCP_PTB` in `~/.commandcode/mcp.json`
- * with the explicit stdio transport fields Command Code writes via `cmd mcp add`.
+ * with explicit stdio transport fields (`transport: "stdio"`, `enabled: true`)
+ * matching Command Code's native `cmd mcp add` configuration.
+ * Detects client presence via `~/.commandcode` directory (detecting installed client without requiring prior configuration).
+ * Uses the `createMcpServersDescriptor` factory - does NOT reimplement `patch` or `verify`.
  */
-export const commandCodeDescriptor: ClientDescriptor = {
+export const commandCodeDescriptor = createMcpServersDescriptor({
   id: "command-code",
   name: "Command Code",
-  format: "mcpServers",
   resolveConfigPath: () => join(homedir(), ".commandcode", "mcp.json"),
+  allowMissing: true,
   detect: () => existsSync(join(homedir(), ".commandcode")),
-  initial: () => ({}),
-  patch: (current, { scriptPath }) => ({
-    ...current,
-    mcpServers: {
-      ...((current.mcpServers as Record<string, unknown>) ?? {}),
-      MCP_PTB: {
-        transport: "stdio",
-        enabled: true,
-        command: "node",
-        args: [scriptPath],
-      },
-    },
-  }),
-  verify: (config) =>
-    Boolean(
-      (config.mcpServers as Record<string, unknown> | undefined)?.MCP_PTB,
-    ),
-};
+  extraServerFields: {
+    transport: "stdio",
+    enabled: true,
+  },
+});

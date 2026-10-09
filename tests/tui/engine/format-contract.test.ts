@@ -8,6 +8,7 @@ import { kimiDescriptor, kimiClient } from "../../../src/tui/clients/kimi.js";
 import { kiroDescriptor, kiroClient } from "../../../src/tui/clients/kiro.js";
 import { qwenDescriptor, qwenClient } from "../../../src/tui/clients/qwen.js";
 import { antigravityDescriptor, antigravityClient } from "../../../src/tui/clients/antigravity.js";
+import { commandCodeDescriptor, commandCodeClient } from "../../../src/tui/clients/command-code.js";
 import { cursorDescriptor as rawCursor } from "../../../src/tui/clients/descriptors/cursor.js";
 import { geminiDescriptor as rawGemini } from "../../../src/tui/clients/descriptors/gemini.js";
 import { windsurfDescriptor as rawWindsurf } from "../../../src/tui/clients/descriptors/windsurf.js";
@@ -15,6 +16,7 @@ import { kimiDescriptor as rawKimi } from "../../../src/tui/clients/descriptors/
 import { kiroDescriptor as rawKiro } from "../../../src/tui/clients/descriptors/kiro.js";
 import { qwenDescriptor as rawQwen } from "../../../src/tui/clients/descriptors/qwen.js";
 import { antigravityDescriptor as rawAntigravity } from "../../../src/tui/clients/descriptors/antigravity.js";
+import { commandCodeDescriptor as rawCommandCode } from "../../../src/tui/clients/descriptors/command-code.js";
 import { opencodeDescriptor } from "../../../src/tui/clients/descriptors/opencode.js";
 import { kilocodeDescriptor } from "../../../src/tui/clients/descriptors/kilocode.js";
 import { vscodeDescriptor } from "../../../src/tui/clients/descriptors/vscode.js";
@@ -30,6 +32,7 @@ describe("ClientDescriptor format contract & standard descriptor modules", () =>
     kiroDescriptor,
     qwenDescriptor,
     antigravityDescriptor,
+    commandCodeDescriptor,
     opencodeDescriptor,
     kilocodeDescriptor,
     vscodeDescriptor,
@@ -37,9 +40,9 @@ describe("ClientDescriptor format contract & standard descriptor modules", () =>
     codexDescriptor,
   ];
 
-  it("enforces that all 12 client descriptors declare an explicit, valid format", () => {
+  it("enforces that all 13 client descriptors declare an explicit, valid format", () => {
     const validFormats = new Set(["mcpServers", "mcp", "servers", "custom"]);
-    expect(allDescriptors).toHaveLength(12);
+    expect(allDescriptors).toHaveLength(13);
     for (const d of allDescriptors) {
       expect(d.format).toBeDefined();
       expect(typeof d.format).toBe("string");
@@ -56,6 +59,7 @@ describe("ClientDescriptor format contract & standard descriptor modules", () =>
     expect(kiroDescriptor).toBe(rawKiro);
     expect(qwenDescriptor).toBe(rawQwen);
     expect(antigravityDescriptor).toBe(rawAntigravity);
+    expect(commandCodeDescriptor).toBe(rawCommandCode);
   });
 
   it("instantiates functioning MCPClient instances from façades", () => {
@@ -67,6 +71,7 @@ describe("ClientDescriptor format contract & standard descriptor modules", () =>
       kiroClient,
       qwenClient,
       antigravityClient,
+      commandCodeClient,
     ];
     for (const c of clients) {
       expect(typeof c.id).toBe("string");
@@ -94,5 +99,30 @@ describe("ClientDescriptor format contract & standard descriptor modules", () =>
     });
     expect(desc.verify?.(patched)).toBe(true);
     expect(desc.verify?.({})).toBe(false);
+  });
+
+  it("createMcpServersDescriptor supports custom detect and extraServerFields", () => {
+    const desc = createMcpServersDescriptor({
+      id: "custom-extra",
+      name: "Custom Extra",
+      resolveConfigPath: () => "/path/custom.json",
+      detect: () => true,
+      extraServerFields: {
+        transport: "stdio",
+        enabled: true,
+      },
+    });
+    expect(desc.detect?.()).toBe(true);
+    const patched = desc.patch({}, { projectPath: "/p", scriptPath: "/p/dist/index.js" }) as Record<string, unknown>;
+    expect(patched).toEqual({
+      mcpServers: {
+        MCP_PTB: {
+          transport: "stdio",
+          enabled: true,
+          command: "node",
+          args: ["/p/dist/index.js"],
+        },
+      },
+    });
   });
 });

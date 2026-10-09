@@ -323,14 +323,14 @@ describe("MCP Client Adapters", () => {
   });
 
   describe("commandCodeClient", () => {
-    it("should detect when config exists", async () => {
+    it("should detect when ~/.commandcode directory exists", async () => {
       vi.mocked(existsSync).mockReturnValue(true);
       const { commandCodeClient } = await import("../../src/tui/clients/command-code.js");
 
       expect(commandCodeClient.detect()).toBe(true);
     });
 
-    it("should not detect when config missing", async () => {
+    it("should not detect when ~/.commandcode directory is missing", async () => {
       vi.mocked(existsSync).mockReturnValue(false);
       const { commandCodeClient } = await import("../../src/tui/clients/command-code.js");
 
