@@ -309,8 +309,8 @@ describe("Codex Descriptor & Client Façade", () => {
 });
 
 describe("Client Registry (ALL_CLIENTS & getAvailableClients)", () => {
-  it("preserves exact historical client order across all 12 clients", () => {
-    expect(ALL_CLIENTS).toHaveLength(12);
+  it("preserves exact historical client order across all 13 clients", () => {
+    expect(ALL_CLIENTS).toHaveLength(13);
 
     const expectedIds = [
       "opencode",
@@ -325,6 +325,7 @@ describe("Client Registry (ALL_CLIENTS & getAvailableClients)", () => {
       "kiro",
       "qwen",
       "antigravity",
+      "command-code",
     ];
 
     const actualIds = ALL_CLIENTS.map((c) => c.id);
@@ -343,6 +344,7 @@ describe("Client Registry (ALL_CLIENTS & getAvailableClients)", () => {
       "Kiro IDE",
       "Qwen Code",
       "Antigravity",
+      "Command Code",
     ];
     const actualNames = ALL_CLIENTS.map((c) => c.name);
     expect(actualNames).toEqual(expectedNames);

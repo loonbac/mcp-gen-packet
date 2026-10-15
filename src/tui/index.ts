@@ -50,7 +50,7 @@ async function main() {
 
   p.log.success(`Node.js ${detection.nodeVersion}`);
 
-  // 2. Select clients — show ALL 12 with detection status
+  // 2. Select clients — show ALL 13 with detection status
   const detectedIds = ALL_CLIENTS.filter(c => c.detect()).map(c => c.id);
 
   const options = ALL_CLIENTS.map(c => ({

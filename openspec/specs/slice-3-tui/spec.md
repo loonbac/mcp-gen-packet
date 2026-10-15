@@ -236,7 +236,7 @@ All historical module entry points under `src/tui/clients/*.ts` MUST remain impo
 - WHEN `getAvailableClients()` is called
 - THEN it MUST return an empty array `[]`
 - WHEN `existsSync` returns `true` for all paths
-- THEN `getAvailableClients()` MUST return all 12 clients matching `ALL_CLIENTS.length`
+- THEN `getAvailableClients()` MUST return all 13 clients matching `ALL_CLIENTS.length`
 
 #### Scenario: Preserve exact ordering and exports in client registry
 - GIVEN the imported `ALL_CLIENTS` array from `src/tui/clients/index.ts`
@@ -246,6 +246,7 @@ All historical module entry points under `src/tui/clients/*.ts` MUST remain impo
 - AND element 2 MUST be `vscodeClient` (id `"vscode"`)
 - AND element 3 MUST be `cursorClient` (id `"cursor"`)
 - AND element 11 MUST be `antigravityClient` (id `"antigravity"`)
+- AND element 12 MUST be `commandCodeClient` (id `"command-code"`)
 
 #### Scenario: Full suite regression prevention
 - GIVEN the refactored TUI client adapters and engine

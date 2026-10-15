@@ -322,6 +322,56 @@ describe("MCP Client Adapters", () => {
     });
   });
 
+  describe("commandCodeClient", () => {
+    it("should detect when ~/.commandcode directory exists", async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      const { commandCodeClient } = await import("../../src/tui/clients/command-code.js");
+
+      expect(commandCodeClient.detect()).toBe(true);
+    });
+
+    it("should not detect when ~/.commandcode directory is missing", async () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      const { commandCodeClient } = await import("../../src/tui/clients/command-code.js");
+
+      expect(commandCodeClient.detect()).toBe(false);
+    });
+
+    it("should inject config successfully", async () => {
+      const mockConfig = { mcpServers: {} };
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync)
+        .mockReturnValueOnce(JSON.stringify(mockConfig))
+        .mockReturnValueOnce(JSON.stringify({ ...mockConfig, mcpServers: { MCP_PTB: { transport: "stdio", enabled: true, command: "node", args: ["/test/project/dist/index.js"] } } }));
+      vi.mocked(writeFileSync).mockReturnValue(undefined);
+
+      const { commandCodeClient } = await import("../../src/tui/clients/command-code.js");
+      const result = await commandCodeClient.inject(mockProjectPath);
+
+      expect(result.success).toBe(true);
+      expect(writeFileSync).toHaveBeenCalled();
+    });
+
+    it("should patch mcpServers.MCP_PTB with explicit stdio transport fields", async () => {
+      const { commandCodeDescriptor } = await import("../../src/tui/clients/command-code.js");
+
+      const patched = commandCodeDescriptor.patch(
+        { mcpServers: { otherServer: { command: "other-cli", args: ["serve"] } } },
+        { projectPath: "/test/project", scriptPath: "/test/project/dist/index.js" },
+      ) as Record<string, any>;
+
+      expect(patched.mcpServers.otherServer).toEqual({ command: "other-cli", args: ["serve"] });
+      expect(patched.mcpServers.MCP_PTB).toEqual({
+        transport: "stdio",
+        enabled: true,
+        command: "node",
+        args: ["/test/project/dist/index.js"],
+      });
+      expect(commandCodeDescriptor.verify?.({ mcpServers: { MCP_PTB: {} } })).toBe(true);
+      expect(commandCodeDescriptor.verify?.({ mcpServers: {} })).toBe(false);
+    });
+  });
+
   describe("getAvailableClients", () => {
     it("should return only detected clients", async () => {
       vi.mocked(existsSync).mockReturnValue(false);
